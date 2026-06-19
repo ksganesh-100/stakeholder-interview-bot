@@ -66,6 +66,40 @@ class PostMessage(BaseModel):
     message: str
 
 
+# Synthetic first user turn that prompts the consultant's opening question.
+# Filtered out of the displayed transcript.
+OPENING_USER_MESSAGE = "Hi — I'm ready to start."
+
+
+def transcript_to_display(transcript: list[dict]) -> list[dict]:
+    """Convert the stored Anthropic transcript into chat bubbles for the UI.
+
+    Keeps stakeholder text and consultant text; drops the synthetic opener,
+    tool_use blocks, and tool_result messages.
+    """
+    out = []
+    for m in transcript or []:
+        role, content = m.get("role"), m.get("content")
+        if role == "user":
+            if isinstance(content, str) and content.strip() != OPENING_USER_MESSAGE:
+                out.append({"role": "user", "text": content})
+            # list content == tool_result -> skip
+        elif role == "assistant":
+            if isinstance(content, str):
+                text = content
+            elif isinstance(content, list):
+                text = "".join(
+                    b.get("text", "")
+                    for b in content
+                    if isinstance(b, dict) and b.get("type") == "text"
+                )
+            else:
+                text = ""
+            if text.strip():
+                out.append({"role": "ai", "text": text})
+    return out
+
+
 # ── Public: stakeholder flow ────────────────────────────────────────────────
 
 @app.get("/api/projects/{public_id}")
@@ -99,7 +133,7 @@ def start_interview(
     # responds with a warm first question.
     opening = {
         "role": "user",
-        "content": "Hi — I'm ready to start.",
+        "content": OPENING_USER_MESSAGE,
     }
     result = agent.run_turn(
         transcript=[opening],
@@ -112,6 +146,19 @@ def start_interview(
     db.commit()
 
     return {"interview_id": interview.id, "reply": result["reply"], "done": False}
+
+
+@app.get("/api/interviews/{interview_id}")
+def get_interview(interview_id: int, db: Session = Depends(get_db)):
+    """Return the conversation so far so the UI can resume mid-interview."""
+    interview = db.get(Interview, interview_id)
+    if not interview:
+        raise HTTPException(404, "Interview not found.")
+    return {
+        "name": interview.stakeholder_name,
+        "messages": transcript_to_display(interview.transcript),
+        "done": interview.status == "completed",
+    }
 
 
 @app.post("/api/interviews/{interview_id}/messages")

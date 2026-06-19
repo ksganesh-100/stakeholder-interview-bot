@@ -1,18 +1,14 @@
 import { useEffect, useRef, useState } from "react";
-import { sendMessage } from "../api.js";
+import { getInterview, sendMessage } from "../api.js";
 
-// The SPIN interview UI. Receives the opening consultant message and drives the
-// turn-by-turn exchange until the agent signals the interview is complete.
-export default function Chat({
-  interviewId,
-  stakeholderName,
-  projectName,
-  firstReply,
-  onReset,
-}) {
-  const [messages, setMessages] = useState([{ role: "ai", text: firstReply }]);
+// The SPIN interview UI. On mount it loads the full conversation so far from the
+// backend, so both a fresh start and a resumed (refreshed) session show the real
+// state — never a blank slate over a conversation the server already has.
+export default function Chat({ interviewId, stakeholderName, projectName, onReset }) {
+  const [messages, setMessages] = useState([]);
   const [input, setInput] = useState("");
   const [loading, setLoading] = useState(false);
+  const [restoring, setRestoring] = useState(true);
   const [done, setDone] = useState(false);
   const [error, setError] = useState(null);
   const bottomRef = useRef(null);
@@ -20,6 +16,31 @@ export default function Chat({
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages, loading]);
+
+  // Load the conversation so far (handles fresh start AND resume identically).
+  useEffect(() => {
+    let cancelled = false;
+    getInterview(interviewId)
+      .then((data) => {
+        if (cancelled) return;
+        setMessages(data.messages);
+        setDone(data.done);
+        setRestoring(false);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        // Interview no longer exists (e.g. database was reset) — start clean.
+        if (/not found/i.test(e.message)) {
+          onReset();
+        } else {
+          setError(e.message);
+          setRestoring(false);
+        }
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [interviewId, onReset]);
 
   async function send() {
     const text = input.trim();
@@ -59,6 +80,7 @@ export default function Chat({
       </div>
 
       <div className="messages">
+        {restoring && <div className="typing">Loading your conversation…</div>}
         {messages.map((m, i) => (
           <div key={i} className={`bubble ${m.role}`}>
             {m.text}
@@ -74,7 +96,7 @@ export default function Chat({
         <div ref={bottomRef} />
       </div>
 
-      {!done && (
+      {!done && !restoring && (
         <div className="composer">
           <textarea
             rows={1}

@@ -34,11 +34,7 @@ export default function Landing() {
     setError(null);
     try {
       const res = await startInterview(publicId, name.trim(), role.trim());
-      const s = {
-        interviewId: res.interview_id,
-        name: name.trim(),
-        firstReply: res.reply,
-      };
+      const s = { interviewId: res.interview_id, name: name.trim() };
       localStorage.setItem(storageKey, JSON.stringify(s));
       setSession(s);
     } catch (e) {
@@ -61,7 +57,6 @@ export default function Landing() {
         interviewId={session.interviewId}
         stakeholderName={session.name}
         projectName={project?.name || "Discovery"}
-        firstReply={session.firstReply}
         onReset={reset}
       />
     );

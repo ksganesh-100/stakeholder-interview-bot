@@ -32,6 +32,9 @@ export const startInterview = (publicId, name, role) =>
     body: { name, role },
   });
 
+export const getInterview = (interviewId) =>
+  request(`/interviews/${interviewId}`);
+
 export const sendMessage = (interviewId, message) =>
   request(`/interviews/${interviewId}/messages`, {
     method: "POST",
