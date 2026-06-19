@@ -1,0 +1,27 @@
+# Render Blueprint: one web service (FastAPI serves API + built SPA) + Postgres.
+# Deploy by connecting this repo in the Render dashboard ("New + → Blueprint").
+services:
+  - type: web
+    name: stakeholder-interview-bot
+    runtime: python
+    plan: free
+    # Build the React SPA, then install the Python backend.
+    buildCommand: >-
+      cd frontend && npm install --include=dev && npm run build &&
+      cd ../backend && pip install -r requirements.txt
+    startCommand: cd backend && uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ANTHROPIC_API_KEY
+        sync: false            # set in the Render dashboard
+      - key: ADMIN_PASSCODE
+        sync: false            # set in the Render dashboard
+      - key: DATABASE_URL
+        fromDatabase:
+          name: stakeholder-bot-db
+          property: connectionString
+      - key: PYTHON_VERSION
+        value: "3.12"
+
+databases:
+  - name: stakeholder-bot-db
+    plan: free
