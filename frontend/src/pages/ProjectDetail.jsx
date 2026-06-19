@@ -1,6 +1,10 @@
 import { useEffect, useState } from "react";
 import { Link, useParams } from "react-router-dom";
-import { getProjectInterviews, runSynthesis } from "../api.js";
+import {
+  getProjectInterviews,
+  runSynthesis,
+  downloadProjectExport,
+} from "../api.js";
 
 // One stakeholder's structured summary.
 function SummaryCard({ iv }) {
@@ -109,6 +113,15 @@ export default function ProjectDetail() {
     }
   }
 
+  async function exportData(format) {
+    setError(null);
+    try {
+      await downloadProjectExport(passcode, publicId, format);
+    } catch (e) {
+      setError(e.message);
+    }
+  }
+
   if (error && !data) {
     return (
       <div className="admin-wrap">
@@ -134,18 +147,34 @@ export default function ProjectDetail() {
         {data ? `${completedCount} completed of ${data.interviews.length}` : ""}
       </p>
 
-      <button
-        className="btn"
-        style={{ width: "auto", marginBottom: 22 }}
-        onClick={generate}
-        disabled={synthLoading || completedCount < 1}
-      >
-        {synthLoading
-          ? "Synthesising…"
-          : completedCount < 1
-          ? "No completed responses yet"
-          : "Generate AI strategy synthesis"}
-      </button>
+      <div style={{ display: "flex", gap: 10, flexWrap: "wrap", marginBottom: 22 }}>
+        <button
+          className="btn"
+          style={{ width: "auto", margin: 0 }}
+          onClick={generate}
+          disabled={synthLoading || completedCount < 1}
+        >
+          {synthLoading
+            ? "Synthesising…"
+            : completedCount < 1
+            ? "No completed responses yet"
+            : "Generate AI strategy synthesis"}
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={() => exportData("csv")}
+          disabled={!data || data.interviews.length === 0}
+        >
+          Export CSV
+        </button>
+        <button
+          className="btn-ghost"
+          onClick={() => exportData("json")}
+          disabled={!data || data.interviews.length === 0}
+        >
+          Export JSON
+        </button>
+      </div>
 
       {error && data && <div className="error">{error}</div>}
       {synth && <SynthesisView data={synth} />}

@@ -5,13 +5,16 @@ every other path. Public endpoints drive the stakeholder interview; admin
 endpoints (guarded by a single passcode) create projects and run the
 cross-stakeholder synthesis.
 """
+import csv
+import io
+import json
 import os
 import secrets
 from datetime import datetime, timezone
 from pathlib import Path
 
 from dotenv import load_dotenv
-from fastapi import Depends, FastAPI, Header, HTTPException
+from fastapi import Depends, FastAPI, Header, HTTPException, Response
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -279,6 +282,88 @@ def synthesis(public_id: str, db: Session = Depends(get_db)):
         raise HTTPException(400, "No completed interviews to synthesise yet.")
 
     return {"count": len(completed), "synthesis": agent.run_synthesis(completed)}
+
+
+@app.get(
+    "/api/admin/projects/{public_id}/export",
+    dependencies=[Depends(require_admin)],
+)
+def export_project(
+    public_id: str, format: str = "json", db: Session = Depends(get_db)
+):
+    """Download every response in a project as JSON or CSV.
+
+    Exports all interviews (completed and in-progress); list fields are
+    pipe-joined for CSV. A portable backup independent of any hosting tier.
+    """
+    project = db.query(Project).filter_by(public_id=public_id).first()
+    if not project:
+        raise HTTPException(404, "Project not found.")
+
+    rows = []
+    for i in project.interviews:
+        s = i.summary_json or {}
+        rows.append(
+            {
+                "stakeholder_name": i.stakeholder_name,
+                "stakeholder_role": i.stakeholder_role,
+                "status": i.status,
+                "created_at": i.created_at.isoformat() if i.created_at else "",
+                "situation": s.get("situation", ""),
+                "problems": s.get("problems", []),
+                "implications": s.get("implications", []),
+                "desired_outcomes": s.get("desired_outcomes", []),
+            }
+        )
+
+    if format == "csv":
+        buf = io.StringIO()
+        writer = csv.writer(buf)
+        writer.writerow(
+            [
+                "stakeholder_name",
+                "stakeholder_role",
+                "status",
+                "created_at",
+                "situation",
+                "problems",
+                "implications",
+                "desired_outcomes",
+            ]
+        )
+        for r in rows:
+            writer.writerow(
+                [
+                    r["stakeholder_name"],
+                    r["stakeholder_role"],
+                    r["status"],
+                    r["created_at"],
+                    r["situation"],
+                    " | ".join(r["problems"]),
+                    " | ".join(r["implications"]),
+                    " | ".join(r["desired_outcomes"]),
+                ]
+            )
+        # Prepend a BOM so Excel opens the UTF-8 file with correct accents.
+        content = "﻿" + buf.getvalue()
+        media, filename = "text/csv", f"{public_id}-responses.csv"
+    else:
+        payload = {
+            "project": {
+                "name": project.name,
+                "client_name": project.client_name,
+                "public_id": public_id,
+            },
+            "interviews": rows,
+        }
+        content = json.dumps(payload, indent=2, ensure_ascii=False)
+        media, filename = "application/json", f"{public_id}-responses.json"
+
+    return Response(
+        content=content,
+        media_type=media,
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Static SPA (production) ─────────────────────────────────────────────────

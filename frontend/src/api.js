@@ -53,3 +53,30 @@ export const getProjectInterviews = (passcode, publicId) =>
 
 export const runSynthesis = (passcode, publicId) =>
   request(`/admin/projects/${publicId}/synthesis`, { method: "POST", passcode });
+
+// Fetch the export (authenticated) and trigger a browser download.
+export async function downloadProjectExport(passcode, publicId, format) {
+  const res = await fetch(
+    `/api/admin/projects/${publicId}/export?format=${format}`,
+    { headers: { "X-Admin-Passcode": passcode } }
+  );
+  if (!res.ok) {
+    let detail = `Export failed (${res.status})`;
+    try {
+      const d = await res.json();
+      if (d.detail) detail = d.detail;
+    } catch {
+      // non-JSON error body
+    }
+    throw new Error(detail);
+  }
+  const blob = await res.blob();
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `${publicId}-responses.${format}`;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
