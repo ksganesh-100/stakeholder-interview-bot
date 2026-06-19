@@ -22,11 +22,13 @@ from tools import (
 
 MODEL = os.environ.get("INTERVIEW_MODEL", "claude-sonnet-4-6")
 SYNTHESIS_MODEL = os.environ.get("SYNTHESIS_MODEL", "claude-sonnet-4-6")
-MAX_TOKENS = 1024
+MAX_TOKENS = 2048  # large enough that the save_summary tool call won't truncate
 
 # Turn at which we start nudging the agent to wrap up, and the hard ceiling.
 WRAP_UP_AFTER_TURN = 9
 MAX_TURNS = 12
+# Safety cap on tool-use iterations within a single turn.
+MAX_TOOL_ITERATIONS = 5
 
 _client: Optional[Anthropic] = None
 
@@ -76,6 +78,60 @@ implications, and desired outcomes.
 - After you call `save_summary`, send a brief, warm closing message."""
 
 
+def _wrap_up_instruction(turn_count: int) -> str:
+    """Extra system guidance appended late in the conversation to steer the close.
+
+    Delivered via the system prompt (not an injected user message) so the
+    message history stays clean and strictly alternating.
+    """
+    if turn_count >= MAX_TURNS:
+        return (
+            "\n\nIMPORTANT: This conversation has run long. Wrap up now — give a warm "
+            "closing line and call save_summary with everything gathered so far."
+        )
+    if turn_count >= WRAP_UP_AFTER_TURN:
+        return (
+            "\n\nNOTE: You are near the end of the conversation. If you have enough across "
+            "all four SPIN stages, move toward need-payoff and prepare to wrap up and call "
+            "save_summary soon."
+        )
+    return ""
+
+
+def _balance(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Drop any assistant message whose tool_use has no following tool_result.
+
+    The Anthropic API rejects a tool_use that isn't immediately followed by a
+    matching tool_result. A turn truncated by max_tokens can leave such a
+    dangling tool_use in the stored transcript; this repairs it on load so the
+    conversation can continue instead of failing every subsequent request.
+    """
+    out: list[dict[str, Any]] = []
+    n = len(messages)
+    for i, m in enumerate(messages):
+        content = m.get("content")
+        has_tool_use = (
+            m.get("role") == "assistant"
+            and isinstance(content, list)
+            and any(isinstance(b, dict) and b.get("type") == "tool_use" for b in content)
+        )
+        if has_tool_use:
+            nxt = messages[i + 1] if i + 1 < n else None
+            nxt_is_result = (
+                isinstance(nxt, dict)
+                and nxt.get("role") == "user"
+                and isinstance(nxt.get("content"), list)
+                and any(
+                    isinstance(b, dict) and b.get("type") == "tool_result"
+                    for b in nxt["content"]
+                )
+            )
+            if not nxt_is_result:
+                continue  # drop the dangling tool_use message
+        out.append(m)
+    return out
+
+
 def _serialize(content: Any) -> list[dict[str, Any]]:
     """Convert SDK content blocks to plain JSON-safe dicts for storage/replay.
 
@@ -86,24 +142,6 @@ def _serialize(content: Any) -> list[dict[str, Any]]:
     for block in content:
         out.append(block.model_dump() if hasattr(block, "model_dump") else block)
     return out
-
-
-def _wrap_up_nudge(turn_count: int) -> Optional[dict[str, Any]]:
-    """A system-style reminder injected late in the conversation to force a close."""
-    if turn_count >= MAX_TURNS:
-        text = (
-            "[Internal note: this conversation has run long. Wrap up now — give a warm "
-            "closing line and call save_summary with everything gathered so far.]"
-        )
-    elif turn_count >= WRAP_UP_AFTER_TURN:
-        text = (
-            "[Internal note: you're near the end of the conversation. If you have enough "
-            "across all four SPIN stages, move toward need-payoff and prepare to wrap up "
-            "and call save_summary soon.]"
-        )
-    else:
-        return None
-    return {"role": "user", "content": text}
 
 
 def run_turn(
@@ -123,19 +161,22 @@ def run_turn(
         }
     """
     client = get_client()
-    system = system_prompt(stakeholder_name, stakeholder_role)
+    system = system_prompt(stakeholder_name, stakeholder_role) + _wrap_up_instruction(
+        turn_count
+    )
 
-    # Work on a copy; only persist real conversation turns, not the transient nudge.
-    messages = list(transcript)
-    nudge = _wrap_up_nudge(turn_count)
-    if nudge:
-        messages = messages + [nudge]
+    # Repair any dangling tool_use left by a previously truncated turn.
+    messages = _balance(list(transcript))
 
     summary: Optional[dict[str, Any]] = None
     reply_text = ""
 
-    # Agentic loop: the model may emit text and/or call save_summary.
-    while True:
+    # Agentic loop: the model may emit text and/or call save_summary. Every
+    # tool_use MUST be answered with a tool_result before the next request, so
+    # we pair them whenever they appear — not only when stop_reason is
+    # "tool_use" (a max_tokens cut-off can carry a tool_use under a different
+    # stop_reason, and leaving it unanswered corrupts the transcript).
+    for _ in range(MAX_TOOL_ITERATIONS):
         response = client.messages.create(
             model=MODEL,
             max_tokens=MAX_TOKENS,
@@ -145,33 +186,30 @@ def run_turn(
         )
         messages.append({"role": "assistant", "content": _serialize(response.content)})
 
+        tool_uses = [b for b in response.content if b.type == "tool_use"]
         for block in response.content:
             if block.type == "text":
                 reply_text += block.text
 
-        if response.stop_reason != "tool_use":
+        if not tool_uses:
             break
 
-        # Handle tool calls (only save_summary exists).
         tool_results = []
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "save_summary":
+        for block in tool_uses:
+            if block.name == "save_summary":
                 summary = dict(block.input)
-                tool_results.append(
-                    {
-                        "type": "tool_result",
-                        "tool_use_id": block.id,
-                        "content": "Summary saved. Thank the stakeholder and close warmly.",
-                    }
-                )
+            tool_results.append(
+                {
+                    "type": "tool_result",
+                    "tool_use_id": block.id,
+                    "content": "Summary saved. Thank the stakeholder and close warmly.",
+                }
+            )
         messages.append({"role": "user", "content": tool_results})
-
-    # Persist everything except the transient nudge message.
-    persisted = [m for m in messages if m is not nudge]
 
     return {
         "reply": reply_text.strip(),
-        "transcript": persisted,
+        "transcript": messages,
         "done": summary is not None,
         "summary": summary,
     }
