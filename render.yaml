@@ -16,12 +16,6 @@ services:
       - key: ADMIN_PASSCODE
         sync: false            # set in the Render dashboard
       - key: DATABASE_URL
-        fromDatabase:
-          name: stakeholder-bot-db
-          property: connectionString
+        sync: false            # external Postgres (Neon) — paste in the dashboard
       - key: PYTHON_VERSION
         value: "3.12"
-
-databases:
-  - name: stakeholder-bot-db
-    plan: free

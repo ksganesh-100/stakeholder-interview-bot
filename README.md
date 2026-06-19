@@ -100,18 +100,26 @@ Environment variables:
 
 ---
 
-## Deploy to Render
+## Deploy to Render (web service) + Neon (database)
+
+The web service runs free on Render; the database is a free, **persistent** Postgres
+from [Neon](https://neon.tech) (Render's own free Postgres is deleted after ~30 days,
+so we don't use it). The app is database-agnostic — it just needs a `DATABASE_URL`.
 
 1. Push this folder to a Git repo.
-2. In Render: **New + → Blueprint**, point it at the repo. `render.yaml` provisions a
-   free web service and a free Postgres instance and wires `DATABASE_URL` automatically.
-3. Set `ANTHROPIC_API_KEY` and `ADMIN_PASSCODE` in the service's **Environment** tab.
-4. Deploy. The build compiles the SPA; FastAPI serves both the API and the SPA from one
-   service (same origin, no CORS needed).
+2. Create a free Neon project and copy its connection string (use the **pooled**
+   one, host contains `-pooler`): `postgresql://user:pass@...neon.tech/db?sslmode=require`.
+3. In Render: **New + → Blueprint**, point it at the repo. `render.yaml` provisions the
+   web service. It will prompt for three values (all `sync: false`):
+   - `ANTHROPIC_API_KEY` — your Claude key
+   - `ADMIN_PASSCODE` — admin passcode
+   - `DATABASE_URL` — the Neon connection string from step 2
+4. Apply. The build compiles the SPA; FastAPI serves both the API and the SPA from one
+   service (same origin, no CORS needed). Tables are created automatically on startup.
 
-**Free-tier notes:** Render free web services sleep after inactivity (first request
-wakes them, ~30s), and free Postgres instances expire after ~30 days. Fine for a pilot;
-upgrade either plan for a long-running deployment.
+**Free-tier notes:** Both Render's free web service and Neon's free compute sleep after
+inactivity and wake on the next request (a few seconds). Neon data persists indefinitely
+on the free tier; upgrade Neon/Render for production traffic.
 
 ---
 
